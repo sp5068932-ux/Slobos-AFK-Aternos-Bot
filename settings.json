@@ -1,8 +1,5 @@
 {
-    "serverHost": "YOUR_SERVER_NAME.aternos.me",
+    "serverHost": "YOUR_SERVER.aternos.me",
     "serverPort": 19132,
-    "botUsername": "ServerGuard247",
-    "mcVersion": "1.20.1",
-    "reconnectIntervalMs": 15000,
-    "antiAfkIntervalMs": 25000
+    "botUsername": "BedrockGuard247"
 }
