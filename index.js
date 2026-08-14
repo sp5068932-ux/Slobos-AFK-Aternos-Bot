@@ -58,6 +58,7 @@ function startBedrockInstance() {
         port: parseInt(config.serverPort),
         username: config.botUsername,
         offline: true // Forces cracked mode to skip Microsoft Xbox verification
+        version: '1.26.43.1'
     });
 
     // Successfully connected hook
