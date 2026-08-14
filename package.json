@@ -1,14 +1,14 @@
 {
-  "name": "aternos-afk-bot-247",
+  "name": "bedrock-afk-bot-247",
   "version": "1.0.0",
-  "description": "24/7 Minecraft server persistence bot optimized for cloud hosting",
+  "description": "24/7 Native Bedrock persistence bot optimized for Render",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "mineflayer": "^4.20.0"
+    "bedrock-protocol": "^3.27.0"
   },
   "engines": {
     "node": ">=16.0.0"
