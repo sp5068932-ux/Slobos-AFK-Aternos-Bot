@@ -1,133 +1,188 @@
-const bedrock = require('bedrock-protocol');
 const express = require('express');
-const fs = require('fs');
+const mineflayer = require('mineflayer');
+const fetch = require('node-fetch');
+
+// ======================= CONFIGURATION =======================
+const CONFIG = {
+  host: process.env.SERVER_IP || 'your-aternos-ip.aternos.me', // Change or set via Environment Variable
+  port: parseInt(process.env.SERVER_PORT) || 25565,             // Default Minecraft port
+  username: process.env.BOT_NAME || 'Aternos_247_Bot',
+  webPort: process.env.PORT || 3000,
+  renderUrl: process.env.RENDER_EXTERNAL_URL || null,           // Populated automatically on Render
+};
+// =============================================================
+
 const app = express();
+let bot = null;
+let isReconnecting = false;
+let autoRestartTimer = null;
 
-// --- 1. LOAD SETTINGS CONFIG ---
-let config = {};
-try {
-    config = JSON.parse(fs.readFileSync('./settings.json', 'utf8'));
-} catch (err) {
-    console.error("❌ Failed to parse settings.json. Using defaults.");
-    config = {
-        serverHost: "localhost",
-        serverPort: 19132,
-        botUsername: "BedrockGuard247"
-    };
-}
-
-// --- 2. RENDER LIVE WEB ENDPOINT FOR GOOGLE SCRIPT PINGS ---
-const PORT = process.env.PORT || 3000;
-let botStatus = "Initializing...";
-let totalReconnections = 0;
-let lastPingTime = "Never";
-
+// --- 1. RENDER WEB SERVER & RANDOMIZED TIME PINGER ---
 app.get('/', (req, res) => {
-    lastPingTime = new Date().toISOString();
-    res.send(`
-        <html>
-            <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding-top:50px;">
-                <h1>🤖 Pure Bedrock Bot Dashboard</h1>
-                <p>Status: <strong style="color:#00e676;">${botStatus}</strong></p>
-                <p>Total Script Reconnects: <strong>${totalReconnections}</strong></p>
-                <p>Last Google Ping: <code style="color:#ffeb3b;">${lastPingTime}</code></p>
-                <p>Target Server: <code>${config.serverHost}:${config.serverPort}</code></p>
-                <hr style="width:300px; border-color:#333;">
-                <small>Secure traffic gateway active.</small>
-            </body>
-        </html>
-    `);
+  res.send(`Bot Status: ONLINE | Server: ${CONFIG.host}:${CONFIG.port}`);
 });
 
-app.listen(PORT, () => {
-    console.log(`📡 [Web Server] Active on port ${PORT}`);
+app.listen(CONFIG.webPort, () => {
+  console.log(`[Web Server] Running on port ${CONFIG.webPort}`);
+  scheduleNextSelfPing();
 });
 
-// --- 3. CORE BEDROCK BOT ENGINE ---
-let client;
-let cycleTimer;
-let antiAfkTimer;
+// Randomized Ping Timer (Between 4 to 8 minutes) to prevent Render bans & keep service awake
+function scheduleNextSelfPing() {
+  const minMinutes = 4;
+  const maxMinutes = 8;
+  const randomDelayMs = Math.floor(Math.random() * (maxMinutes - minMinutes + 1) + minMinutes) * 60 * 1000;
 
-function startBedrockInstance() {
-    botStatus = "Connecting to Bedrock Host...";
-    console.log(`🎮 [Bedrock] Spawning client: "${config.botUsername}"`);
-
-    // Creates an unauthenticated (Cracked) Bedrock client connection
-    client = bedrock.createClient({
-        host: config.serverHost,
-        port: parseInt(config.serverPort),
-        username: config.botUsername,
-        offline: true,
-        version: '1.21.90'
-    });
-
-    // Successfully connected hook
-    client.on('join', () => {
-        botStatus = "Online on Bedrock Server";
-        console.log(`✅ [Success] ${config.botUsername} joined the Bedrock server.`);
-        
-        initiateBedrockAntiAFK();
-        initiate6HourHardCycle();
-    });
-
-    // Handle network drops or server restarts safely
-    client.on('close', () => {
-        botStatus = "Disconnected";
-        console.warn(`⚠️ [Network Alert] Bedrock link dropped.`);
-        
-        clearInterval(antiAfkTimer);
-        clearTimeout(cycleTimer);
-
-        totalReconnections++;
-        console.log("🔄 Re-establishing Bedrock socket in 15 seconds...");
-        setTimeout(() => {
-            startBedrockInstance();
-        }, 15000);
-    });
-
-    // Catch errors gracefully so Render does not crash your deployment
-    client.on('error', (err) => {
-        console.error(`❌ [Internal Error Protocol]: ${err.message}`);
-    });
+  setTimeout(async () => {
+    if (CONFIG.renderUrl) {
+      try {
+        await fetch(CONFIG.renderUrl);
+        console.log(`[Self-Ping] Successfully pinged ${CONFIG.renderUrl} (Interval: ${(randomDelayMs / 60000).toFixed(1)}m)`);
+      } catch (err) {
+        console.error('[Self-Ping] Failed to reach Render endpoint:', err.message);
+      }
+    } else {
+      console.log('[Self-Ping] RENDER_EXTERNAL_URL not set yet. Running locally or waiting for URL setup.');
+    }
+    scheduleNextSelfPing(); // Schedule next cycle with a brand-new random delay
+  }, randomDelayMs);
 }
 
-// --- 4. ANTI-AFK CHAT FLOOD MECHANIC ---
-function initiateBedrockAntiAFK() {
-    // Sends a safe command network packet every 40 seconds to prevent IDLE kicks
-    antiAfkTimer = setInterval(() => {
-        if (!client) return;
-        try {
-            client.queue('text', {
-                type: 'chat',
-                needs_translation: false,
-                source_name: config.botUsername,
-                xuid: '',
-                platform_chat_id: '',
-                message: `/me is checking world latency loops.`
-            });
-        } catch(e) {
-            console.error("Failed executing Bedrock text data packet.");
-        }
-    }, 40000);
+// --- 2. BOT CREATION & EVENT MANAGEMENT ---
+function createBot() {
+  if (isReconnecting) return;
+  
+  console.log(`[Bot] Connecting to ${CONFIG.host}:${CONFIG.port} as ${CONFIG.username}...`);
+
+  bot = mineflayer.createBot({
+    host: CONFIG.host,
+    port: CONFIG.port,
+    username: CONFIG.username,
+    version: false, // Auto-detect PaperMC version for 1st-attempt join success
+    hideErrors: false
+  });
+
+  bot.once('spawn', () => {
+    console.log('[Bot] Joined the server successfully!');
+    startAntiAFK();
+    scheduleSixHourReconnect();
+  });
+
+  // Handle death/respawn
+  bot.on('death', () => {
+    console.log('[Bot] Bot died! Respawning instantly...');
+    bot.respawn();
+  });
+
+  // Kick / Disconnect handling with automatic retry
+  bot.on('kicked', (reason) => {
+    console.log('[Bot] Kicked from server:', reason);
+    handleReconnect();
+  });
+
+  bot.on('error', (err) => {
+    console.error('[Bot] Network/Protocol Error:', err.message);
+    if (err.code === 'ECONNREFUSED') {
+      console.log('[Bot] Aternos server is offline. Waiting before checking again...');
+    }
+  });
+
+  bot.on('end', () => {
+    console.log('[Bot] Connection closed.');
+    handleReconnect();
+  });
 }
 
-// --- 5. MANDATORY 6-HOUR CONNECTION CYCLE (Render Safe) ---
-function initiate6HourHardCycle() {
-    const CYCLE_TIME = 6 * 60 * 60 * 1000; // 6 Hours
-    
-    cycleTimer = setTimeout(() => {
-        console.log("⏱️ 6-Hour threshold hit. Refreshing Bedrock client connection to wipe logs...");
-        if (client) {
-            try { 
-                client.close(); 
-            } catch (e) { 
-                startBedrockInstance(); 
+// --- 3. AUTONOMOUS BEHAVIOR (MOVE, MINE, LOOK) ---
+function startAntiAFK() {
+  let isExecutingAction = false;
+
+  const afkInterval = setInterval(() => {
+    if (!bot || !bot.entity || isExecutingAction) return;
+    isExecutingAction = true;
+
+    const actionType = Math.floor(Math.random() * 4);
+
+    try {
+      switch (actionType) {
+        case 0:
+          // Random Pitch/Yaw Rotation
+          const yaw = (Math.random() * Math.PI * 2) - Math.PI;
+          const pitch = (Math.random() * Math.PI / 2) - (Math.PI / 4);
+          bot.look(yaw, pitch, true);
+          break;
+
+        case 1:
+          // Short Movement Step
+          const directions = ['forward', 'back', 'left', 'right'];
+          const dir = directions[Math.floor(Math.random() * directions.length)];
+          bot.setControlState(dir, true);
+          if (Math.random() > 0.5) bot.setControlState('jump', true);
+          
+          setTimeout(() => {
+            if (bot) {
+              bot.setControlState(dir, false);
+              bot.setControlState('jump', false);
             }
-        } else {
-            startBedrockInstance();
-        }
-    }, CYCLE_TIME);
+          }, 1200);
+          break;
+
+        case 2:
+          // Arm Swing Action (Simulate mining/hitting)
+          bot.swingArm('mainhand');
+          break;
+
+        case 3:
+          // Crouch sequence
+          bot.setControlState('sneak', true);
+          setTimeout(() => {
+            if (bot) bot.setControlState('sneak', false);
+          }, 800);
+          break;
+      }
+    } catch (err) {
+      console.log('[Anti-AFK] Action skipped:', err.message);
+    } finally {
+      isExecutingAction = false;
+    }
+  }, 10000); // Trigger a random interaction every 10 seconds
+
+  bot.once('end', () => clearInterval(afkInterval));
 }
 
-// --- INITIALIZE BOOT PROCESS ---
-startBedrockInstance();
+// --- 4. 6-HOUR HARD DISCONNECT & RECONNECT ---
+function scheduleSixHourReconnect() {
+  if (autoRestartTimer) clearTimeout(autoRestartTimer);
+
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  console.log('[System] 6-Hour lifecycle reset scheduled.');
+
+  autoRestartTimer = setTimeout(() => {
+    console.log('[System] 6-Hour threshold reached. Executing clean disconnect/reconnect...');
+    if (bot) {
+      bot.quit('6-Hour Routine Reset');
+    } else {
+      handleReconnect();
+    }
+  }, SIX_HOURS_MS);
+}
+
+// Reconnection Guard
+function handleReconnect() {
+  if (isReconnecting) return;
+  isReconnecting = true;
+
+  if (bot) {
+    bot.removeAllListeners();
+    bot = null;
+  }
+
+  console.log('[System] Reconnecting in 30 seconds...');
+  setTimeout(() => {
+    isReconnecting = false;
+    createBot();
+  }, 30000);
+}
+
+// Start application
+createBot();
