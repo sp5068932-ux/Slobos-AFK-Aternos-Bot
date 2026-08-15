@@ -1,5 +1,5 @@
 {
-    "serverHost": "Lenduukk.aternos.me",
-    "serverPort": 41531,
-    "botUsername": "Dudeisking999"
+  "ip": "YOUR-SERVER-IP.aternos.me",
+  "port": 25565,
+  "name": "Aternos_247_Bot"
 }
