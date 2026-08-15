@@ -2,15 +2,21 @@ const express = require('express');
 const mineflayer = require('mineflayer');
 const fetch = require('node-fetch');
 
-// ======================= CONFIGURATION =======================
+// Load settings from settings.json or Environment Variables
+let settings = {};
+try {
+  settings = require('./settings.json');
+} catch (e) {
+  console.log('[Config] settings.json not found, falling back to environment variables.');
+}
+
 const CONFIG = {
-  host: process.env.SERVER_IP || 'your-aternos-ip.aternos.me', // Change or set via Environment Variable
-  port: parseInt(process.env.SERVER_PORT) || 25565,             // Default Minecraft port
-  username: process.env.BOT_NAME || 'Aternos_247_Bot',
+  host: process.env.SERVER_IP || settings.ip || 'your-aternos-ip.aternos.me',
+  port: parseInt(process.env.SERVER_PORT || settings.port || 25565),
+  username: process.env.BOT_NAME || settings.name || 'Aternos_247_Bot',
   webPort: process.env.PORT || 3000,
-  renderUrl: process.env.RENDER_EXTERNAL_URL || null,           // Populated automatically on Render
+  renderUrl: process.env.RENDER_EXTERNAL_URL || null
 };
-// =============================================================
 
 const app = express();
 let bot = null;
