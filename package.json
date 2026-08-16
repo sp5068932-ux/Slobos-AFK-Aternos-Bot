@@ -1,7 +1,7 @@
 {
   "name": "slobos-afk-aternos-bot",
   "version": "2.0.0",
-  "description": "Enhanced 24/7 Aternos AFK Bot",
+  "description": "24/7 Aternos AFK Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +9,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "mineflayer": "^4.20.1",
-    "mineflayer-pathfinder": "^2.4.5",
+    "minecraft-protocol": "^1.47.0",
     "node-fetch": "^2.7.0"
   },
   "engines": {
