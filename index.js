@@ -1,5 +1,6 @@
 const express = require('express');
 const mineflayer = require('mineflayer');
+const mc = require('minecraft-protocol');
 const fetch = require('node-fetch');
 
 // ======================= CONFIGURATION =======================
@@ -23,7 +24,7 @@ const app = express();
 let bot = null;
 let isReconnecting = false;
 let autoRestartTimer = null;
-let pingInterval = null;
+let pingTimer = null;
 
 // --- 1. RENDER WEB SERVER & RANDOMIZED SELF-PINGER ---
 app.get('/', (req, res) => {
@@ -53,34 +54,27 @@ function scheduleNextSelfPing() {
   }, randomDelayMs);
 }
 
-// --- 2. AUTOMATIC SERVER STATUS CHECKER (PING) ---
+// --- 2. AUTOMATIC SERVER STATUS CHECK (STANDALONE PING) ---
 function checkServerAndConnect() {
   if (isReconnecting || bot) return;
 
   console.log(`[Status Check] Ping sending to ${CONFIG.host}:${CONFIG.port}...`);
 
-  mineflayer.ping(
-    {
-      host: CONFIG.host,
-      port: CONFIG.port,
-      timeout: 5000
-    },
-    (err, response) => {
-      if (err) {
-        console.log(`[Status Check] Server is OFFLINE or loading. Retrying in 30 seconds...`);
-        schedulePingRetry();
-      } else {
-        console.log(`[Status Check] Server is ONLINE! (${response.players.online}/${response.players.max} players). Connecting bot...`);
-        if (pingInterval) clearInterval(pingInterval);
-        createBot();
-      }
+  mc.ping({ host: CONFIG.host, port: CONFIG.port }, (err, results) => {
+    if (err) {
+      console.log(`[Status Check] Server is OFFLINE or loading. Retrying in 30 seconds...`);
+      schedulePingRetry();
+    } else {
+      console.log(`[Status Check] Server is ONLINE! Connecting bot...`);
+      if (pingTimer) clearTimeout(pingTimer);
+      createBot();
     }
-  );
+  });
 }
 
 function schedulePingRetry() {
-  if (pingInterval) clearInterval(pingInterval);
-  pingInterval = setInterval(() => {
+  if (pingTimer) clearTimeout(pingTimer);
+  pingTimer = setTimeout(() => {
     checkServerAndConnect();
   }, 30000); // Check every 30 seconds
 }
@@ -96,7 +90,7 @@ function createBot() {
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: false, // Auto-version handshake
+    version: false, // Auto-version negotiation forPaperMC 1.20+
     hideErrors: false
   });
 
@@ -208,5 +202,5 @@ function handleDisconnect() {
   checkServerAndConnect();
 }
 
-// Start the check cycle
+// Start execution
 checkServerAndConnect();
