@@ -2,12 +2,12 @@ const express = require('express');
 const mineflayer = require('mineflayer');
 const fetch = require('node-fetch');
 
-// Load settings from settings.json or Environment Variables
+// ======================= CONFIGURATION =======================
 let settings = {};
 try {
   settings = require('./settings.json');
 } catch (e) {
-  console.log('[Config] settings.json not found, falling back to environment variables.');
+  console.log('[Config] settings.json not found, reading environment variables.');
 }
 
 const CONFIG = {
@@ -15,17 +15,19 @@ const CONFIG = {
   port: parseInt(process.env.SERVER_PORT || settings.port || 25565),
   username: process.env.BOT_NAME || settings.name || 'Aternos_247_Bot',
   webPort: process.env.PORT || 3000,
-  renderUrl: process.env.RENDER_EXTERNAL_URL || null
+  renderUrl: process.env.RENDER_EXTERNAL_URL || null,
 };
+// =============================================================
 
 const app = express();
 let bot = null;
 let isReconnecting = false;
 let autoRestartTimer = null;
+let pingInterval = null;
 
-// --- 1. RENDER WEB SERVER & RANDOMIZED TIME PINGER ---
+// --- 1. RENDER WEB SERVER & RANDOMIZED SELF-PINGER ---
 app.get('/', (req, res) => {
-  res.send(`Bot Status: ONLINE | Server: ${CONFIG.host}:${CONFIG.port}`);
+  res.send(`Bot Status: ${bot ? 'CONNECTED' : 'WAITING FOR SERVER'} | Server: ${CONFIG.host}:${CONFIG.port}`);
 });
 
 app.listen(CONFIG.webPort, () => {
@@ -33,7 +35,6 @@ app.listen(CONFIG.webPort, () => {
   scheduleNextSelfPing();
 });
 
-// Randomized Ping Timer (Between 4 to 8 minutes) to prevent Render bans & keep service awake
 function scheduleNextSelfPing() {
   const minMinutes = 4;
   const maxMinutes = 8;
@@ -43,63 +44,90 @@ function scheduleNextSelfPing() {
     if (CONFIG.renderUrl) {
       try {
         await fetch(CONFIG.renderUrl);
-        console.log(`[Self-Ping] Successfully pinged ${CONFIG.renderUrl} (Interval: ${(randomDelayMs / 60000).toFixed(1)}m)`);
+        console.log(`[Self-Ping] Render endpoint pinged successfully.`);
       } catch (err) {
-        console.error('[Self-Ping] Failed to reach Render endpoint:', err.message);
+        console.error('[Self-Ping] Ping failed:', err.message);
       }
-    } else {
-      console.log('[Self-Ping] RENDER_EXTERNAL_URL not set yet. Running locally or waiting for URL setup.');
     }
-    scheduleNextSelfPing(); // Schedule next cycle with a brand-new random delay
+    scheduleNextSelfPing();
   }, randomDelayMs);
 }
 
-// --- 2. BOT CREATION & EVENT MANAGEMENT ---
+// --- 2. AUTOMATIC SERVER STATUS CHECKER (PING) ---
+function checkServerAndConnect() {
+  if (isReconnecting || bot) return;
+
+  console.log(`[Status Check] Ping sending to ${CONFIG.host}:${CONFIG.port}...`);
+
+  mineflayer.ping(
+    {
+      host: CONFIG.host,
+      port: CONFIG.port,
+      timeout: 5000
+    },
+    (err, response) => {
+      if (err) {
+        console.log(`[Status Check] Server is OFFLINE or loading. Retrying in 30 seconds...`);
+        schedulePingRetry();
+      } else {
+        console.log(`[Status Check] Server is ONLINE! (${response.players.online}/${response.players.max} players). Connecting bot...`);
+        if (pingInterval) clearInterval(pingInterval);
+        createBot();
+      }
+    }
+  );
+}
+
+function schedulePingRetry() {
+  if (pingInterval) clearInterval(pingInterval);
+  pingInterval = setInterval(() => {
+    checkServerAndConnect();
+  }, 30000); // Check every 30 seconds
+}
+
+// --- 3. BOT CREATION & LIFECYCLE ---
 function createBot() {
   if (isReconnecting) return;
-  
-  console.log(`[Bot] Connecting to ${CONFIG.host}:${CONFIG.port} as ${CONFIG.username}...`);
+  isReconnecting = true;
+
+  console.log(`[Bot] Initiating join sequence as ${CONFIG.username}...`);
 
   bot = mineflayer.createBot({
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: false, // Auto-detect PaperMC version for 1st-attempt join success
+    version: false, // Auto-version handshake
     hideErrors: false
   });
 
   bot.once('spawn', () => {
-    console.log('[Bot] Joined the server successfully!');
+    console.log('[Bot] Joined server successfully!');
+    isReconnecting = false;
     startAntiAFK();
     scheduleSixHourReconnect();
   });
 
-  // Handle death/respawn
   bot.on('death', () => {
-    console.log('[Bot] Bot died! Respawning instantly...');
+    console.log('[Bot] Died! Respawning...');
     bot.respawn();
   });
 
-  // Kick / Disconnect handling with automatic retry
   bot.on('kicked', (reason) => {
     console.log('[Bot] Kicked from server:', reason);
-    handleReconnect();
+    handleDisconnect();
   });
 
   bot.on('error', (err) => {
-    console.error('[Bot] Network/Protocol Error:', err.message);
-    if (err.code === 'ECONNREFUSED') {
-      console.log('[Bot] Aternos server is offline. Waiting before checking again...');
-    }
+    console.error('[Bot] Connection Error:', err.message);
   });
 
   bot.on('end', () => {
-    console.log('[Bot] Connection closed.');
-    handleReconnect();
+    console.log('[Bot] Disconnected from server.');
+    handleDisconnect();
   });
 }
 
-// --- 3. AUTONOMOUS BEHAVIOR (MOVE, MINE, LOOK) ---
+// --- 4. AUTONOMOUS ANTI-AFK ACTIONS ---
 function startAntiAFK() {
   let isExecutingAction = false;
 
@@ -112,14 +140,12 @@ function startAntiAFK() {
     try {
       switch (actionType) {
         case 0:
-          // Random Pitch/Yaw Rotation
           const yaw = (Math.random() * Math.PI * 2) - Math.PI;
           const pitch = (Math.random() * Math.PI / 2) - (Math.PI / 4);
           bot.look(yaw, pitch, true);
           break;
 
         case 1:
-          // Short Movement Step
           const directions = ['forward', 'back', 'left', 'right'];
           const dir = directions[Math.floor(Math.random() * directions.length)];
           bot.setControlState(dir, true);
@@ -134,12 +160,10 @@ function startAntiAFK() {
           break;
 
         case 2:
-          // Arm Swing Action (Simulate mining/hitting)
           bot.swingArm('mainhand');
           break;
 
         case 3:
-          // Crouch sequence
           bot.setControlState('sneak', true);
           setTimeout(() => {
             if (bot) bot.setControlState('sneak', false);
@@ -151,44 +175,38 @@ function startAntiAFK() {
     } finally {
       isExecutingAction = false;
     }
-  }, 10000); // Trigger a random interaction every 10 seconds
+  }, 10000);
 
   bot.once('end', () => clearInterval(afkInterval));
 }
 
-// --- 4. 6-HOUR HARD DISCONNECT & RECONNECT ---
+// --- 5. RECONNECT & LIFECYCLE MANAGEMENT ---
 function scheduleSixHourReconnect() {
   if (autoRestartTimer) clearTimeout(autoRestartTimer);
 
   const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-  console.log('[System] 6-Hour lifecycle reset scheduled.');
+  console.log('[System] 6-Hour lifecycle reset timer set.');
 
   autoRestartTimer = setTimeout(() => {
-    console.log('[System] 6-Hour threshold reached. Executing clean disconnect/reconnect...');
+    console.log('[System] 6-Hour mark reached. Executing clean reconnection...');
     if (bot) {
       bot.quit('6-Hour Routine Reset');
     } else {
-      handleReconnect();
+      handleDisconnect();
     }
   }, SIX_HOURS_MS);
 }
 
-// Reconnection Guard
-function handleReconnect() {
-  if (isReconnecting) return;
-  isReconnecting = true;
-
+function handleDisconnect() {
   if (bot) {
     bot.removeAllListeners();
     bot = null;
   }
-
-  console.log('[System] Reconnecting in 30 seconds...');
-  setTimeout(() => {
-    isReconnecting = false;
-    createBot();
-  }, 30000);
+  
+  isReconnecting = false;
+  console.log('[System] Resuming server ping checks...');
+  checkServerAndConnect();
 }
 
-// Start application
-createBot();
+// Start the check cycle
+checkServerAndConnect();
