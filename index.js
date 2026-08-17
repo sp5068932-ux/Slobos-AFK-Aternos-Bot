@@ -22,13 +22,14 @@ const CONFIG = {
 
 const app = express();
 let bot = null;
-let isReconnecting = false;
+let isConnecting = false;
 let autoRestartTimer = null;
-let pingTimer = null;
+let afkInterval = null;
+let pingTimeout = null;
 
 // --- 1. RENDER WEB SERVER & RANDOMIZED SELF-PINGER ---
 app.get('/', (req, res) => {
-  res.send(`Bot Status: ${bot ? 'CONNECTED' : 'WAITING FOR SERVER'} | Server: ${CONFIG.host}:${CONFIG.port}`);
+  res.send(`Bot Status: ${bot ? 'CONNECTED' : 'WAITING/RESTING'} | Server: ${CONFIG.host}:${CONFIG.port}`);
 });
 
 app.listen(CONFIG.webPort, () => {
@@ -54,61 +55,60 @@ function scheduleNextSelfPing() {
   }, randomDelayMs);
 }
 
-// --- 2. AUTOMATIC SERVER STATUS CHECK (STANDALONE PING) ---
+// --- 2. AUTOMATIC SERVER STATUS CHECK ---
 function checkServerAndConnect() {
-  if (isReconnecting || bot) return;
+  if (isConnecting || bot) return;
 
   console.log(`[Status Check] Ping sending to ${CONFIG.host}:${CONFIG.port}...`);
 
-  mc.ping({ host: CONFIG.host, port: CONFIG.port }, (err, results) => {
+  mc.ping({ host: CONFIG.host, port: CONFIG.port }, (err) => {
     if (err) {
       console.log(`[Status Check] Server is OFFLINE or loading. Retrying in 30 seconds...`);
       schedulePingRetry();
     } else {
-      console.log(`[Status Check] Server is ONLINE! Connecting bot...`);
-      if (pingTimer) clearTimeout(pingTimer);
+      console.log(`[Status Check] Server is ONLINE! Connecting bot now...`);
+      if (pingTimeout) clearTimeout(pingTimeout);
       createBot();
     }
   });
 }
 
 function schedulePingRetry() {
-  if (pingTimer) clearTimeout(pingTimer);
-  pingTimer = setTimeout(() => {
+  if (pingTimeout) clearTimeout(pingTimeout);
+  pingTimeout = setTimeout(() => {
     checkServerAndConnect();
-  }, 30000); // Check every 30 seconds
+  }, 30000);
 }
 
 // --- 3. BOT CREATION & LIFECYCLE ---
 function createBot() {
-  if (isReconnecting) return;
-  isReconnecting = true;
+  if (isConnecting || bot) return;
+  isConnecting = true;
 
-  console.log(`[Bot] Initiating join sequence as ${CONFIG.username}...`);
+  console.log(`[Bot] Connecting to ${CONFIG.host}:${CONFIG.port} as ${CONFIG.username}...`);
 
   bot = mineflayer.createBot({
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: false, // Auto-version negotiation forPaperMC 1.20+
+    version: false,
     hideErrors: false
   });
 
   bot.once('spawn', () => {
     console.log('[Bot] Joined server successfully!');
-    isReconnecting = false;
+    isConnecting = false;
     startAntiAFK();
     scheduleSixHourReconnect();
   });
 
   bot.on('death', () => {
     console.log('[Bot] Died! Respawning...');
-    bot.respawn();
+    if (bot) bot.respawn();
   });
 
   bot.on('kicked', (reason) => {
-    console.log('[Bot] Kicked from server:', reason);
-    handleDisconnect();
+    console.log('[Bot] Kicked from server:', typeof reason === 'object' ? JSON.stringify(reason) : reason);
   });
 
   bot.on('error', (err) => {
@@ -116,18 +116,17 @@ function createBot() {
   });
 
   bot.on('end', () => {
-    console.log('[Bot] Disconnected from server.');
-    handleDisconnect();
+    console.log('[Bot] Connection closed.');
+    cleanupAndReconnect(120000); // 2-Minute Rest Cooldown
   });
 }
 
 // --- 4. AUTONOMOUS ANTI-AFK ACTIONS ---
 function startAntiAFK() {
-  let isExecutingAction = false;
+  if (afkInterval) clearInterval(afkInterval);
 
-  const afkInterval = setInterval(() => {
-    if (!bot || !bot.entity || isExecutingAction) return;
-    isExecutingAction = true;
+  afkInterval = setInterval(() => {
+    if (!bot || !bot.entity) return;
 
     const actionType = Math.floor(Math.random() * 4);
 
@@ -165,41 +164,43 @@ function startAntiAFK() {
           break;
       }
     } catch (err) {
-      console.log('[Anti-AFK] Action skipped:', err.message);
-    } finally {
-      isExecutingAction = false;
+      console.log('[Anti-AFK] Action skipped.');
     }
   }, 10000);
-
-  bot.once('end', () => clearInterval(afkInterval));
 }
 
-// --- 5. RECONNECT & LIFECYCLE MANAGEMENT ---
+// --- 5. 6-HOUR SESSION RESET & COOLDOWN ---
 function scheduleSixHourReconnect() {
   if (autoRestartTimer) clearTimeout(autoRestartTimer);
 
   const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-  console.log('[System] 6-Hour lifecycle reset timer set.');
+  console.log('[System] 6-Hour session timer started.');
 
   autoRestartTimer = setTimeout(() => {
-    console.log('[System] 6-Hour mark reached. Executing clean reconnection...');
+    console.log('[System] 6 Hours reached. Initiating 2-minute cooldown rest...');
     if (bot) {
-      bot.quit('6-Hour Routine Reset');
+      bot.end(); // Gracefully close socket
     } else {
-      handleDisconnect();
+      cleanupAndReconnect(120000);
     }
   }, SIX_HOURS_MS);
 }
 
-function handleDisconnect() {
+function cleanupAndReconnect(cooldownMs = 120000) {
+  if (afkInterval) clearInterval(afkInterval);
+  if (autoRestartTimer) clearTimeout(autoRestartTimer);
+
   if (bot) {
     bot.removeAllListeners();
     bot = null;
   }
-  
-  isReconnecting = false;
-  console.log('[System] Resuming server ping checks...');
-  checkServerAndConnect();
+
+  isConnecting = false;
+
+  console.log(`[System] Resting for ${(cooldownMs / 1000)} seconds before checking server state...`);
+  setTimeout(() => {
+    checkServerAndConnect();
+  }, cooldownMs);
 }
 
 // Start execution
