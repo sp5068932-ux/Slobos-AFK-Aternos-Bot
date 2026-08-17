@@ -2,6 +2,15 @@ const express = require('express');
 const mineflayer = require('mineflayer');
 const fetch = require('node-fetch');
 
+// Prevent unexpected process crashes on unhandled error events
+process.on('uncaughtException', (err) => {
+  console.error('[System] Uncaught Exception caught:', err.message);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[System] Unhandled Rejection:', reason);
+});
+
 // ======================= CONFIGURATION =======================
 let settings = {};
 try {
@@ -10,10 +19,14 @@ try {
   console.log('[Config] settings.json missing, using fallback environment values.');
 }
 
+// Clean host input to automatically strip any accidental ports or protocol prefixes
+const rawHost = process.env.SERVER_IP || settings.ip || 'leaffish.aternos.host';
+const cleanHost = rawHost.replace(/https?:\/\//, '').split(':')[0].trim();
+
 const CONFIG = {
-  host: process.env.SERVER_IP || settings.ip || 'Lenduukk-xe1y.aternos.me',
+  host: cleanHost,
   port: parseInt(process.env.SERVER_PORT || settings.port || 25565),
-  username: process.env.BOT_NAME || settings.name || 'Aternos_247_Bot',
+  username: process.env.BOT_NAME || settings.name || 'ManFromfog666',
   webPort: process.env.PORT || 10000,
   renderUrl: process.env.RENDER_EXTERNAL_URL || null,
 };
@@ -25,7 +38,7 @@ let isConnecting = false;
 let autoRestartTimer = null;
 let afkInterval = null;
 
-// --- 1. RENDER KEEP-ALIVE WEB SERVER (RANDOMIZED PING) ---
+// --- 1. RENDER KEEP-ALIVE WEB SERVER ---
 app.get('/', (req, res) => {
   res.send(`Bot Status: ${bot && bot.entity ? 'ONLINE IN-GAME' : 'RECONNECTING / STANDBY'} | Server: ${CONFIG.host}:${CONFIG.port}`);
 });
@@ -64,7 +77,7 @@ function connectBot() {
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: false, // Auto-negotiate Java paper version
+    version: false,
     checkTimeoutInterval: 60 * 1000,
     hideErrors: false
   });
@@ -91,7 +104,7 @@ function connectBot() {
 
   bot.on('end', () => {
     console.log('[Bot] Connection ended.');
-    cleanupAndRetry(30000); // Retry every 30s if server is offline or restarting
+    cleanupAndRetry(30000);
   });
 }
 
@@ -107,14 +120,12 @@ function startAntiAFK() {
     try {
       switch (actionType) {
         case 0:
-          // Smooth view angle rotation
           const yaw = (Math.random() * Math.PI * 2) - Math.PI;
           const pitch = (Math.random() * Math.PI / 2) - (Math.PI / 4);
           bot.look(yaw, pitch, true);
           break;
 
         case 1:
-          // Random step & jump movement
           const directions = ['forward', 'back', 'left', 'right'];
           const dir = directions[Math.floor(Math.random() * directions.length)];
           bot.setControlState(dir, true);
@@ -129,12 +140,10 @@ function startAntiAFK() {
           break;
 
         case 2:
-          // Hand swing interaction
           bot.swingArm('mainhand');
           break;
 
         case 3:
-          // Crouch toggle
           bot.setControlState('sneak', true);
           setTimeout(() => {
             if (bot) bot.setControlState('sneak', false);
@@ -152,14 +161,13 @@ function scheduleSixHourReconnect() {
   if (autoRestartTimer) clearTimeout(autoRestartTimer);
 
   const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-  console.log('[System] 6-Hour lifecycle reset scheduled.');
 
   autoRestartTimer = setTimeout(() => {
     console.log('[System] 6 Hours elapsed. Executing session reset...');
     if (bot) {
       bot.end();
     } else {
-      cleanupAndRetry(120000); // 2-minute safety rest
+      cleanupAndRetry(120000);
     }
   }, SIX_HOURS_MS);
 }
@@ -181,5 +189,4 @@ function cleanupAndRetry(delayMs = 30000) {
   }, delayMs);
 }
 
-// Start bot connection loop
 connectBot();
