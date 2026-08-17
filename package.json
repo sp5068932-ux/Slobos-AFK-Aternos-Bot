@@ -1,7 +1,7 @@
 {
   "name": "slobos-afk-aternos-bot",
-  "version": "3.0.0",
-  "description": "24/7 Reliable Aternos AFK Bot",
+  "version": "3.1.0",
+  "description": "24/7 Reliable Aternos AFK Mineflayer Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
