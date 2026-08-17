@@ -2,191 +2,134 @@ const express = require('express');
 const mineflayer = require('mineflayer');
 const fetch = require('node-fetch');
 
-// Prevent unexpected process crashes on unhandled error events
+// Guard against process crashes
 process.on('uncaughtException', (err) => {
-  console.error('[System] Uncaught Exception caught:', err.message);
+  console.error('[System Error]', err.message || err);
 });
-
 process.on('unhandledRejection', (reason) => {
-  console.error('[System] Unhandled Rejection:', reason);
+  console.error('[System Rejection]', reason);
 });
 
-// ======================= CONFIGURATION =======================
+// Load config
 let settings = {};
 try {
   settings = require('./settings.json');
 } catch (e) {
-  console.log('[Config] settings.json missing, using fallback environment values.');
+  console.log('[Config] settings.json not found, falling back to environment variables.');
 }
 
-// Clean host input to automatically strip any accidental ports or protocol prefixes
-const rawHost = process.env.SERVER_IP || settings.ip || 'leaffish.aternos.host';
+// Clean and parse inputs
+const rawHost = process.env.SERVER_IP || settings.ip || 'bass.aternos.host';
 const cleanHost = rawHost.replace(/https?:\/\//, '').split(':')[0].trim();
 
 const CONFIG = {
   host: cleanHost,
-  port: parseInt(process.env.SERVER_PORT || settings.port || 25565),
+  port: parseInt(process.env.SERVER_PORT || settings.port || 60945),
   username: process.env.BOT_NAME || settings.name || 'ManFromfog666',
+  version: process.env.SERVER_VERSION || settings.version || false, // Pass explicit version string
   webPort: process.env.PORT || 10000,
   renderUrl: process.env.RENDER_EXTERNAL_URL || null,
 };
-// =============================================================
 
 const app = express();
 let bot = null;
 let isConnecting = false;
-let autoRestartTimer = null;
 let afkInterval = null;
 
-// --- 1. RENDER KEEP-ALIVE WEB SERVER ---
+// Keep-Alive Web Server for Render
 app.get('/', (req, res) => {
-  res.send(`Bot Status: ${bot && bot.entity ? 'ONLINE IN-GAME' : 'RECONNECTING / STANDBY'} | Server: ${CONFIG.host}:${CONFIG.port}`);
+  res.send(`Status: ${bot && bot.entity ? 'ONLINE' : 'CONNECTING/OFFLINE'} | Target: ${CONFIG.host}:${CONFIG.port} | Version: ${CONFIG.version || 'Auto'}`);
 });
 
 app.listen(CONFIG.webPort, () => {
-  console.log(`[Web Server] Running on port ${CONFIG.webPort}`);
+  console.log(`[Web Server] Active on port ${CONFIG.webPort}`);
   scheduleNextSelfPing();
 });
 
 function scheduleNextSelfPing() {
-  const minMin = 4;
-  const maxMin = 8;
-  const randomDelayMs = Math.floor(Math.random() * (maxMin - minMin + 1) + minMin) * 60 * 1000;
-
+  const delayMs = Math.floor(Math.random() * (8 - 4 + 1) + 4) * 60 * 1000;
   setTimeout(async () => {
     if (CONFIG.renderUrl) {
       try {
         await fetch(CONFIG.renderUrl);
-        console.log(`[Self-Ping] Keep-alive ping sent successfully.`);
-      } catch (err) {
-        console.error('[Self-Ping] Ping error:', err.message);
-      }
+        console.log('[Self-Ping] Keep-alive ping sent.');
+      } catch (err) {}
     }
     scheduleNextSelfPing();
-  }, randomDelayMs);
+  }, delayMs);
 }
 
-// --- 2. DIRECT BOT CONNECTION ENGINE ---
+// Bot Connection Engine
 function connectBot() {
   if (isConnecting || bot) return;
   isConnecting = true;
 
-  console.log(`[Bot] Attaching to ${CONFIG.host}:${CONFIG.port} as ${CONFIG.username}...`);
+  console.log(`[Bot] Connecting to ${CONFIG.host}:${CONFIG.port} as ${CONFIG.username} (Version: ${CONFIG.version || 'Auto-Detect'})...`);
 
-  bot = mineflayer.createBot({
+  const botOptions = {
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: false,
-    checkTimeoutInterval: 60 * 1000,
+    auth: 'offline',
+    checkTimeoutInterval: 90 * 1000,
     hideErrors: false
-  });
+  };
+
+  // If a explicit version is specified, attach it to skip latency pinging
+  if (CONFIG.version) {
+    botOptions.version = CONFIG.version;
+  }
+
+  bot = mineflayer.createBot(botOptions);
 
   bot.once('spawn', () => {
-    console.log('[Bot] SUCCESS: Connected and spawned inside the server!');
+    console.log('[Bot] SUCCESS: Joined the server instantly!');
     isConnecting = false;
     startAntiAFK();
-    scheduleSixHourReconnect();
   });
 
   bot.on('death', () => {
-    console.log('[Bot] Bot died. Triggering instant respawn...');
     if (bot) bot.respawn();
   });
 
   bot.on('kicked', (reason) => {
-    console.log('[Bot] Disconnected/Kicked:', typeof reason === 'object' ? JSON.stringify(reason) : reason);
+    console.log('[Bot Kicked]:', typeof reason === 'object' ? JSON.stringify(reason) : reason);
   });
 
   bot.on('error', (err) => {
-    console.error('[Bot] Protocol Error:', err.message);
+    console.error('[Bot Error]:', err.message);
   });
 
-  bot.on('end', () => {
-    console.log('[Bot] Connection ended.');
-    cleanupAndRetry(30000);
+  bot.on('end', (reason) => {
+    console.log('[Bot Disconnected]:', reason);
+    cleanupAndRetry(20000);
   });
 }
 
-// --- 3. AUTONOMOUS ANTI-AFK ACTIONS ---
 function startAntiAFK() {
   if (afkInterval) clearInterval(afkInterval);
-
+  
   afkInterval = setInterval(() => {
     if (!bot || !bot.entity) return;
-
-    const actionType = Math.floor(Math.random() * 4);
-
     try {
-      switch (actionType) {
-        case 0:
-          const yaw = (Math.random() * Math.PI * 2) - Math.PI;
-          const pitch = (Math.random() * Math.PI / 2) - (Math.PI / 4);
-          bot.look(yaw, pitch, true);
-          break;
-
-        case 1:
-          const directions = ['forward', 'back', 'left', 'right'];
-          const dir = directions[Math.floor(Math.random() * directions.length)];
-          bot.setControlState(dir, true);
-          if (Math.random() > 0.5) bot.setControlState('jump', true);
-          
-          setTimeout(() => {
-            if (bot) {
-              bot.setControlState(dir, false);
-              bot.setControlState('jump', false);
-            }
-          }, 1200);
-          break;
-
-        case 2:
-          bot.swingArm('mainhand');
-          break;
-
-        case 3:
-          bot.setControlState('sneak', true);
-          setTimeout(() => {
-            if (bot) bot.setControlState('sneak', false);
-          }, 800);
-          break;
-      }
-    } catch (err) {
-      console.log('[Anti-AFK] Action execution skipped.');
-    }
-  }, 10000);
+      bot.swingArm('mainhand');
+      bot.setControlState('jump', true);
+      setTimeout(() => {
+        if (bot) bot.setControlState('jump', false);
+      }, 400);
+    } catch (err) {}
+  }, 15000);
 }
 
-// --- 4. 6-HOUR SESSION RESET & CLEAN RECONNECT ---
-function scheduleSixHourReconnect() {
-  if (autoRestartTimer) clearTimeout(autoRestartTimer);
-
-  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-
-  autoRestartTimer = setTimeout(() => {
-    console.log('[System] 6 Hours elapsed. Executing session reset...');
-    if (bot) {
-      bot.end();
-    } else {
-      cleanupAndRetry(120000);
-    }
-  }, SIX_HOURS_MS);
-}
-
-function cleanupAndRetry(delayMs = 30000) {
+function cleanupAndRetry(delayMs = 20000) {
   if (afkInterval) clearInterval(afkInterval);
-  if (autoRestartTimer) clearTimeout(autoRestartTimer);
-
   if (bot) {
     bot.removeAllListeners();
     bot = null;
   }
-
   isConnecting = false;
-
-  console.log(`[System] Reconnection attempt in ${delayMs / 1000} seconds...`);
-  setTimeout(() => {
-    connectBot();
-  }, delayMs);
+  console.log(`[System] Retrying connection in ${delayMs / 1000}s...`);
+  setTimeout(() => connectBot(), delayMs);
 }
 
 connectBot();
